@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Snake — with Sound Effects</title>
+  <style>
+    :root{--bg:#0f1724;--panel:#0b1220;--accent:#22c55e;--muted:#94a3b8}
+    html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    body{display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#071021 0%, #081126 100%);color:#cbd5e1}
+    .wrapper{width:900px;max-width:95%;display:grid;grid-template-columns:1fr 320px;gap:20px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:12px;padding:16px;box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+    canvas{background:linear-gradient(180deg,#00121a,#032431);display:block;width:100%;height:100%;border-radius:8px}
+    .hud{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+    .score{font-weight:700;color:var(--accent);font-size:18px}
+    .controls{display:flex;gap:8px}
+    button{background:#0b1220;border:1px solid rgba(255,255,255,0.03);color:var(--muted);padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.primary{background:var(--accent);color:#072018;border:font-weight:700}
+    label.switch{display:inline-flex;gap:8px;align-items:center}
+    .side{display:flex;flex-direction:column;gap:12px}
+    .small{font-size:13px;color:var(--muted)}
+    .muted{color:var(--muted);font-size:13px}
+    .footer{display:flex;justify-content:space-between;align-items:center;margin-top:10px}
+    .hint{font-size:13px;color:var(--muted)}
+    input[type=range]{width:100%}
+    .center{display:flex;align-items:center;justify-content:center}
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="card">
+      <div class="hud">
+        <div class="score">Score: <span id="score">0</span></div>
+        <div class="controls">
+          <button id="startBtn" class="primary">Start</button>
+          <button id="pauseBtn">Pause</button>
+          <label class="switch"><input id="soundToggle" type="checkbox" checked> Sounds</label>
+        </div>
+      </div>
+      <div style="height:520px;">
+        <canvas id="game" width="600" height="520"></canvas>
+      </div>
+      <div class="footer">
+        <div class="muted">Use arrows or WASD to move. Press Space to pause.</div>
+        <div class="muted">Made with Web Audio API</div>
+      </div>
+    </div>
+
+    <div class="card side">
+      <div>
+        <div style="font-weight:700;font-size:16px">Settings</div>
+        <div class="small" style="margin-top:8px">Adjust speed (higher -> faster game loop)</div>
+        <input id="speedRange" type="range" min="4" max="18" value="8">
+        <div class="small">Grid size (cells): <span id="gridSizeLabel">20</span></div>
+      </div>
+
+      <div>
+        <div style="font-weight:700">Info</div>
+        <div class="small">Eat the apples to grow. Don't hit walls or yourself. Score increases with each apple.</div>
+      </div>
+
+      <div>
+        <div style="font-weight:700">Controls</div>
+        <div class="small">Arrow Keys / WASD — Move</div>
+        <div class="small">Space — Pause / Resume</div>
+        <div class="small">S — Toggle Sound</div>
+      </div>
+
+      <div class="center" style="margin-top:auto">
+        <button id="restartBtn">Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // --- Game constants and state ---
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const soundToggle = document.getElementById('soundToggle');
+  const speedRange = document.getElementById('speedRange');
+  const gridSizeLabel = document.getElementById('gridSizeLabel');
+
+  let gridSize = 20; // cells across height will adjust to canvas
+  gridSizeLabel.textContent = gridSize;
+
+  let cellSize = Math.floor(canvas.width / gridSize);
+  let rows = Math.floor(canvas.height / cellSize);
+
+  let snake = [];
+  let dir = {x:1,y:0};
+  let nextDir = {x:1,y:0};
+  let apple = null;
+  let running = false;
+  let score = 0;
+  let intervalId = null;
+  let gameSpeed = parseInt(speedRange.value,10); // frames per second-ish
+
+  // --- Audio setup (Web Audio API) ---
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  let audioCtx = null;
+  let masterGain = null;
+  let bgOsc = null;
+  let soundEnabled = soundToggle.checked;
+
+  function ensureAudio(){
+    if(!audioCtx){
+      audioCtx = new AudioContext();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.12; // overall volume
+      masterGain.connect(audioCtx.destination);
+    }
+  }
+
+  function playTone(freq, time=0.08, type='sine', when=0){
+    if(!soundEnabled) return;
+    ensureAudio();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.value = 0.0001;
+    o.connect(g); g.connect(masterGain);
+    const now = audioCtx.currentTime + when;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.7, now + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + time);
+    o.start(now); o.stop(now + time + 0.02);
+  }
+
+  function playEat(){ playTone(880,0.12,'sine'); playTone(1320,0.12,'sine',0.02); }
+  function playCrash(){ playTone(120,0.25,'sawtooth'); playTone(60,0.35,'sine',0.03); }
+  function playMove(){ playTone(400,0.03,'square'); }
+
+  function startBackground(){
+    if(!soundEnabled) return;
+    ensureAudio();
+    if(bgOsc) { bgOsc.stop(); bgOsc = null; }
+    bgOsc = audioCtx.createOscillator();
+    const bgGain = audioCtx.createGain();
+    bgOsc.type = 'sine';
+    bgOsc.frequency.value = 150;
+    bgGain.gain.value = 0.02;
+    bgOsc.connect(bgGain); bgGain.connect(masterGain);
+    bgOsc.start();
+  }
+  function stopBackground(){ if(bgOsc){ bgOsc.stop(); bgOsc = null; } }
+
+  // --- Helpers ---
+  function reset(){
+    cellSize = Math.floor(canvas.width / gridSize);
+    rows = Math.floor(canvas.height / cellSize);
+    snake = [];
+    const startX = Math.floor(gridSize/2);
+    const startY = Math.floor(rows/2);
+    for(let i=0;i<4;i++) snake.push({x:startX-i,y:startY});
+    dir = {x:1,y:0}; nextDir = {x:1,y:0};
+    placeApple();
+    score = 0; updateScore();
+  }
+
+  function placeApple(){
+    while(true){
+      const x = Math.floor(Math.random()*gridSize);
+      const y = Math.floor(Math.random()*rows);
+      if(!snake.some(s=>s.x===x && s.y===y)) { apple = {x,y}; break; }
+    }
+  }
+
+  function updateScore(){ scoreEl.textContent = score; }
+
+  function draw(){
+    // background
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // grid subtle
+    ctx.fillStyle = '#021820';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // apple
+    if(apple){
+      const ax = apple.x*cellSize + 2;
+      const ay = apple.y*cellSize + 2;
+      const s = cellSize - 4;
+      ctx.fillStyle = '#ff5252';
+      roundRect(ctx, ax, ay, s, s, 6); ctx.fill();
+      // seed
+      ctx.fillStyle = '#300'; ctx.fillRect(ax + s*0.45, ay + 2, 2, 4);
+    }
+
+    // snake
+    for(let i=0;i<snake.length;i++){
+      const p = snake[i];
+      const x = p.x*cellSize + 1;
+      const y = p.y*cellSize + 1;
+      const s = cellSize - 2;
+      ctx.fillStyle = i===0 ? '#58d68d' : '#2aa46a';
+      roundRect(ctx, x, y, s, s, 6); ctx.fill();
+    }
+  }
+
+  function roundRect(ctx,x,y,w,h,r){
+    r = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function step(){
+    // apply queued direction (prevent reverse)
+    if((nextDir.x !== -dir.x || nextDir.y !== -dir.y) ) {
+      dir = nextDir;
+    }
+    const head = {x:snake[0].x + dir.x, y:snake[0].y + dir.y};
+
+    // collisions: walls
+    if(head.x < 0 || head.x >= gridSize || head.y < 0 || head.y >= rows) {
+      gameOver(); return;
+    }
+    // collisions: self
+    if(snake.some(s => s.x === head.x && s.y === head.y)) { gameOver(); return; }
+
+    // move
+    snake.unshift(head);
+
+    // eat?
+    if(apple && head.x === apple.x && head.y === apple.y){
+      score += 1; updateScore(); placeApple(); if(soundEnabled) playEat();
+      // slightly increase speed by shortening interval later
+    } else {
+      snake.pop();
+    }
+
+    if(soundEnabled) playMove();
+    draw();
+  }
+
+  function gameOver(){
+    running = false; clearInterval(intervalId); intervalId = null; startBtn.disabled = false; pauseBtn.disabled = true;
+    stopBackground(); if(soundEnabled) playCrash();
+    // show game over overlay
+    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Game Over', canvas.width/2, canvas.height/2 - 10);
+    ctx.font = '16px sans-serif'; ctx.fillText('Press Restart to play again', canvas.width/2, canvas.height/2 + 20);
+  }
+
+  function start(){
+    if(!running){
+      running = true; startBtn.disabled = true; pauseBtn.disabled = false;
+      // adapt interval by speed
+      const fps = Math.max(4, Math.min(60, parseInt(speedRange.value,10)));
+      intervalId = setInterval(step, Math.round(1000 / fps));
+      if(soundEnabled) startBackground();
+    }
+  }
+
+  function pause(){
+    if(running){ running = false; clearInterval(intervalId); intervalId = null; startBtn.disabled = false; pauseBtn.disabled = true; stopBackground(); }
+  }
+
+  // --- Input handling ---
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W'){ nextDir = {x:0,y:-1}; e.preventDefault(); }
+    if(e.key === 'ArrowDown' || e.key === 's' || e.key === 'S'){ nextDir = {x:0,y:1}; e.preventDefault(); }
+    if(e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A'){ nextDir = {x:-1,y:0}; e.preventDefault(); }
+    if(e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D'){ nextDir = {x:1,y:0}; e.preventDefault(); }
+    if(e.code === 'Space'){ if(running) pause(); else start(); e.preventDefault(); }
+    if(e.key === 'S' || e.key === 's'){ soundToggle.checked = !soundToggle.checked; toggleSound(soundToggle.checked); }
+  });
+
+  // UI hooks
+  startBtn.addEventListener('click', ()=>{ // resume audio context on user gesture
+    ensureAudio(); if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); start(); });
+  pauseBtn.addEventListener('click', ()=>{ pause(); });
+  restartBtn.addEventListener('click', ()=>{ pause(); reset(); draw(); start(); });
+  soundToggle.addEventListener('change', (e)=>{ toggleSound(e.target.checked); });
+  speedRange.addEventListener('input', ()=>{
+    // restart interval to apply new speed if running
+    if(running){ clearInterval(intervalId); intervalId = setInterval(step, Math.round(1000/parseInt(speedRange.value,10))); }
+  });
+
+  function toggleSound(on){ soundEnabled = !!on; if(!soundEnabled) stopBackground(); else if(running) startBackground(); }
+
+  // initialize
+  reset(); draw(); pauseBtn.disabled = true;
+
+  // responsive: update grid size when window resized or user changes gridSize label by clicking (nice easter egg)
+  // small click handler: change grid size via clicking the label (not required but handy)
+  gridSizeLabel.addEventListener('click', ()=>{
+    const newSize = prompt('Enter grid size (12 - 40)', String(gridSize));
+    const n = parseInt(newSize,10);
+    if(!isNaN(n) && n>=12 && n<=40){ gridSize = n; gridSizeLabel.textContent = gridSize; reset(); draw(); }
+  });
+
+  // keep canvas crisp on high-DPI
+  function fixDPI(){
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.width; const h = canvas.height;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.scale(dpr, dpr);
+    cellSize = Math.floor(w / gridSize);
+    rows = Math.floor(h / cellSize);
+    draw();
+  }
+  fixDPI();
+
+  // optional: simple touch controls (swipe) for mobile
+  let touchStart = null;
+  canvas.addEventListener('touchstart', (e)=>{ touchStart = e.touches[0]; });
+  canvas.addEventListener('touchmove', (e)=>{ if(!touchStart) return; const t = e.touches[0]; const dx = t.clientX - touchStart.clientX; const dy = t.clientY - touchStart.clientY; if(Math.abs(dx) > 20 || Math.abs(dy) > 20){ if(Math.abs(dx) > Math.abs(dy)){ nextDir = dx > 0 ? {x:1,y:0} : {x:-1,y:0}; } else { nextDir = dy > 0 ? {x:0,y:1} : {x:0,y:-1}; } touchStart = null; } });
+
+  // draw initial frame
+  draw();
+  </script>
+</body>
+</html>
